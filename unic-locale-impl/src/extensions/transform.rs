@@ -75,6 +75,11 @@ fn is_language_subtag(t: &[u8]) -> bool {
     ((2..=8).contains(&slen) || slen == 4) && !t.iter().any(|c: &u8| !c.is_ascii_alphabetic())
 }
 
+fn is_tvalue(t: &[u8]) -> bool {
+    let slen = t.len();
+    (3..=8).contains(&slen) && !t.iter().any(|c: &u8| !c.is_ascii_alphanumeric())
+}
+
 impl TransformExtensionList {
     /// Returns `true` if there are no tfields and no tlang in
     /// the `TransformExtensionList`.
@@ -299,7 +304,7 @@ impl TransformExtensionList {
                 }
                 current_tkey = Some(parse_tkey(subtag)?);
                 iter.next();
-            } else if current_tkey.is_some() {
+            } else if current_tkey.is_some() && is_tvalue(subtag) {
                 if let Some(tval) = parse_tvalue(subtag)? {
                     current_tvalue.push(tval);
                 }

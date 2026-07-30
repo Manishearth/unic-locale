@@ -228,3 +228,115 @@ fn test_unicode_attributes_ordering() {
         .expect("Can't set attribute");
     assert_eq!(&loc.to_string(), "en-u-bar-baz-foo");
 }
+
+#[test]
+fn test_other_extensions() {
+    let inputs = [
+        ("en-US", "en-US"),
+        ("en-a-aaa", "en-a-aaa"),
+        ("en-US-b-foo", "en-US-b-foo"),
+        ("en-0-001", "en-0-001"),
+        (
+            "en-US-b-foo-a-bar-u-ca-buddhist",
+            "en-US-a-bar-b-foo-u-ca-buddhist",
+        ),
+        ("und-a-xyz-x-test", "und-a-xyz-x-test"),
+        ("en-v-foo-w-bar", "en-v-foo-w-bar"),
+        ("en-a-warbl-babble", "en-a-warbl-babble"),
+        ("en-a-foo-b-bar-a-baz", "en-a-foo-baz-b-bar"),
+    ];
+
+    for (input, expected) in &inputs {
+        let loc: Locale = input.parse().expect("Parsing failed");
+        assert_eq!(&loc.to_string(), expected);
+    }
+}
+
+#[test]
+fn test_invalid_extensions_no_panic() {
+    let repro_inputs = [
+        ("en-US", Some("en-US")),
+        ("en-a", Some("en")),
+        ("en-a-aaa", Some("en-a-aaa")),
+        ("en-0", Some("en")),
+        ("und-b-x", Some("und")),
+        ("en-@", None),
+        ("en-US-b-foo", Some("en-US-b-foo")),
+        ("en-US-invalidextension", None),
+        ("en-@-foo", None),
+    ];
+
+    for (input, expected) in &repro_inputs {
+        let result = input.parse::<Locale>();
+        match expected {
+            Some(expected_str) => {
+                let loc = result.expect("Should parse without panic");
+                assert_eq!(&loc.to_string(), expected_str);
+            }
+            None => {
+                assert!(result.is_err(), "Expected parse error for {}", input);
+            }
+        }
+    }
+}
+
+#[test]
+fn test_other_extensions_defensive_display() {
+    let mut loc: Locale = "en-US-u-ca-buddhist-t-en-h0-hybrid"
+        .parse()
+        .expect("Should parse");
+
+    // Programmatically insert into public `other` map with various singletons including uppercase and reserved letters
+    let tag_v: tinystr::TinyStr8 = "valv".parse().unwrap();
+    let tag_x: tinystr::TinyStr8 = "valx".parse().unwrap();
+    let tag_a: tinystr::TinyStr8 = "vala".parse().unwrap();
+    let tag_t: tinystr::TinyStr8 = "valt".parse().unwrap();
+
+    loc.extensions.other.insert('V', vec![tag_v]); // Uppercase V > u, should format as lowercase after -u-
+    loc.extensions.other.insert('X', vec![tag_x]); // Uppercase X, private use, should format at the very end after standard -x-
+    loc.extensions.other.insert('A', vec![tag_a]); // Uppercase A < t, should format before -t-
+    loc.extensions.other.insert('t', vec![tag_t]); // Lowercase t in other map, should format defensively alongside transform
+
+    assert_eq!(
+        &loc.to_string(),
+        "en-US-a-vala-t-en-h0-hybrid-t-valt-u-ca-buddhist-v-valv-x-valx"
+    );
+}
+
+#[test]
+fn test_transform_to_unicode_sequencing() {
+    let inputs = [
+        // BCP 47 canonical order: -t- before -u-, which previously errored when -t- ended with a tvalue
+        (
+            "en-US-t-h0-hybrid-u-ca-buddhist",
+            "en-US-t-h0-hybrid-u-ca-buddhist",
+        ),
+        ("pl-t-en-m0-val-u-hc-h12", "pl-t-en-m0-val-u-hc-h12"),
+        (
+            "en-US-t-h0-hybrid-a-foo-u-ca-buddhist-x-bar",
+            "en-US-a-foo-t-h0-hybrid-u-ca-buddhist-x-bar",
+        ),
+    ];
+
+    for (input, expected) in &inputs {
+        let loc: Locale = input.parse().expect("Parsing failed");
+        assert_eq!(&loc.to_string(), *expected);
+    }
+}
+
+#[test]
+fn test_other_extensions_defensive_sorting() {
+    let mut loc: Locale = "en-US".parse().expect("Should parse");
+
+    // Test case-insensitive sorting in BTreeMap: in raw ASCII, 'B' (66) comes before 'a' (97).
+    // Without sorting by lowercase in Display, this would emit `-b` before `-a`, violating BCP 47.
+    let tag_a: tinystr::TinyStr8 = "vala".parse().unwrap();
+    let tag_b: tinystr::TinyStr8 = "valb".parse().unwrap();
+    let tag_0: tinystr::TinyStr8 = "val0".parse().unwrap();
+
+    loc.extensions.other.insert('B', vec![tag_b]); // Uppercase 'B' (ASCII 66)
+    loc.extensions.other.insert('a', vec![tag_a]); // Lowercase 'a' (ASCII 97)
+    loc.extensions.other.insert('0', vec![tag_0]); // Digit '0' (ASCII 48)
+
+    assert_eq!(&loc.to_string(), "en-US-0-val0-a-vala-b-valb");
+}

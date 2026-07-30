@@ -76,7 +76,14 @@ fn create_extensions_map(map: HashMap<String, HashMap<String, String>>) -> Exten
                         .expect("Setting extension value failed.");
                 }
             }
-            _ => unimplemented!(),
+            ExtensionType::Other(ch) => {
+                let mut subtags = map
+                    .keys()
+                    .map(|s| s.parse().expect("Failed to parse subtag."))
+                    .collect::<Vec<_>>();
+                subtags.sort_unstable();
+                result.other.insert(ch, subtags);
+            }
         }
     }
     result

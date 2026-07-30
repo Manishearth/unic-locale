@@ -6,7 +6,7 @@
 //!  * Unicode Extensions - marked as `u`.
 //!  * Transform Extensions - marked as `t`.
 //!  * Private Use Extensions - marked as `x`.
-//!  * Other extensions - marked as any `a-z` except of `u`, `t` and `x`.
+//!  * Other extensions - marked as any alphanumeric character (`a-z`, `0-9`) except for `u`, `t` and `x`.
 mod private;
 mod transform;
 mod unicode;
@@ -33,7 +33,7 @@ pub enum ExtensionType {
     Unicode,
     /// Private Extension Type marked as `x`.
     Private,
-    /// Other Extension Type marked as `a-z` except of `t`, `u` and `x`.
+    /// Other Extension Type marked as any alphanumeric character (`a-z`, `0-9`) except for `t`, `u` and `x`.
     Other(char),
 }
 
@@ -47,6 +47,13 @@ impl ExtensionType {
             sign if sign.is_ascii_alphanumeric() => Ok(ExtensionType::Other(char::from(sign))),
             _ => Err(ParserError::InvalidExtension),
         }
+    }
+
+    pub(crate) fn from_subtag(subtag: &[u8]) -> Result<Self, ParserError> {
+        if subtag.len() != 1 {
+            return Err(ParserError::InvalidExtension);
+        }
+        Self::from_byte(subtag[0])
     }
 }
 
@@ -84,18 +91,37 @@ impl ExtensionsMap {
 
         let mut st = iter.next();
         while let Some(subtag) = st {
-            match subtag.first().map(|b| ExtensionType::from_byte(*b)) {
-                Some(Ok(ExtensionType::Unicode)) => {
+            if subtag.is_empty() {
+                st = iter.next();
+                continue;
+            }
+            match ExtensionType::from_subtag(subtag)? {
+                ExtensionType::Unicode => {
                     result.unicode = UnicodeExtensionList::try_from_iter(iter)?;
                 }
-                Some(Ok(ExtensionType::Transform)) => {
+                ExtensionType::Transform => {
                     result.transform = TransformExtensionList::try_from_iter(iter)?;
                 }
-                Some(Ok(ExtensionType::Private)) => {
+                ExtensionType::Private => {
                     result.private = PrivateExtensionList::try_from_iter(iter)?;
                 }
-                None => {}
-                _ => unimplemented!(),
+                ExtensionType::Other(ext) => {
+                    let mut subtags = vec![];
+                    while let Some(next_subtag) = iter.peek() {
+                        let slen = next_subtag.len();
+                        if (2..=8).contains(&slen)
+                            && !next_subtag.iter().any(|c| !c.is_ascii_alphanumeric())
+                        {
+                            let s = TinyStr8::try_from_utf8(next_subtag)
+                                .map_err(|_| ParserError::InvalidSubtag)?;
+                            subtags.push(s.to_ascii_lowercase());
+                            iter.next();
+                        } else {
+                            break;
+                        }
+                    }
+                    result.other.entry(ext).or_default().extend(subtags);
+                }
             }
 
             st = iter.next();
@@ -105,7 +131,10 @@ impl ExtensionsMap {
     }
 
     pub fn is_empty(&self) -> bool {
-        self.unicode.is_empty() && self.transform.is_empty() && self.private.is_empty()
+        self.unicode.is_empty()
+            && self.transform.is_empty()
+            && self.private.is_empty()
+            && self.other.values().all(Vec::is_empty)
     }
 }
 
@@ -119,8 +148,72 @@ impl FromStr for ExtensionsMap {
 
 impl std::fmt::Display for ExtensionsMap {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
-        // Alphabetic by singleton (t, u, x)
-        write!(f, "{}{}{}", self.transform, self.unicode, self.private)?;
+        if self.other.is_empty() {
+            write!(f, "{}{}{}", self.transform, self.unicode, self.private)?;
+            return Ok(());
+        }
+
+        let mut other_sorted = self
+            .other
+            .iter()
+            .filter(|(_, v)| !v.is_empty())
+            .collect::<Vec<_>>();
+        other_sorted.sort_by_key(|(k, _)| (k.to_ascii_lowercase(), **k));
+
+        // Alphabetic by singleton (0-9, a-z before t)
+        for (k, v) in &other_sorted {
+            let k_lower = k.to_ascii_lowercase();
+            if k_lower < 't' {
+                write!(f, "-{}", k_lower)?;
+                for subtag in *v {
+                    write!(f, "-{}", subtag)?;
+                }
+            }
+        }
+
+        write!(f, "{}", self.transform)?;
+        // Defensively format any 't' / 'T' manually inserted into `other`
+        for (k, v) in &other_sorted {
+            if k.eq_ignore_ascii_case(&'t') {
+                write!(f, "-t")?;
+                for subtag in *v {
+                    write!(f, "-{}", subtag)?;
+                }
+            }
+        }
+
+        write!(f, "{}", self.unicode)?;
+        // Defensively format any 'u' / 'U' manually inserted into `other`
+        for (k, v) in &other_sorted {
+            if k.eq_ignore_ascii_case(&'u') {
+                write!(f, "-u")?;
+                for subtag in *v {
+                    write!(f, "-{}", subtag)?;
+                }
+            }
+        }
+
+        // Alphabetic by singleton (after u, excluding private-use x)
+        for (k, v) in &other_sorted {
+            let k_lower = k.to_ascii_lowercase();
+            if k_lower > 'u' && k_lower != 'x' {
+                write!(f, "-{}", k_lower)?;
+                for subtag in *v {
+                    write!(f, "-{}", subtag)?;
+                }
+            }
+        }
+
+        write!(f, "{}", self.private)?;
+        // Defensively format any 'x' / 'X' manually inserted into `other` (private use strictly at the end)
+        for (k, v) in &other_sorted {
+            if k.eq_ignore_ascii_case(&'x') {
+                write!(f, "-x")?;
+                for subtag in *v {
+                    write!(f, "-{}", subtag)?;
+                }
+            }
+        }
 
         Ok(())
     }
